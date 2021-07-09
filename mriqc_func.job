@@ -1,0 +1,78 @@
+#!/bin/bash
+#
+#SBATCH -J p50_mriqc
+#SBATCH --time=06:00:00
+#SBATCH -n 1
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=64G
+#SBATCH -p leanew1,normal  # Queue names you can submit to
+# Outputs ----------------------------------
+#SBATCH -o logs/mriqc.%N.%j.out
+#SBATCH -e logs/mriqc.%N.%j.err
+#SBATCH --mail-user=ramirezc@stanford.edu
+#SBATCH --mail-type=ALL
+# ------------------------------------------
+
+
+# NOTE: logs folder must exist!
+STUDY="${SCRATCH}/p50"
+BIDS_DIR="${STUDY}/bids_input"
+DERIVS_DIR="${STUDY}/derivatives/mriqc_0.15.1-2019-07-27"
+WF_DIR="${SCRATCH}/tmp_p50_mriqc"
+
+containers_home="${SCRATCH}/poldrack_containers"
+mriqc_container="poldracklab_mriqc_0.15.1-2019-07-27.simg"
+
+# Prepare some writeable bind-mount points.
+TEMPLATEFLOW_HOST_HOME=$HOME/.cache/templateflow
+MRIQC_HOST_CACHE=$HOME/.cache/fmriprep
+mkdir -p ${TEMPLATEFLOW_HOST_HOME}
+mkdir -p ${MRIQC_HOST_CACHE}
+
+# Prepare derivatives folder
+mkdir -p ${BIDS_DIR}
+mkdir -p ${DERIVS_DIR}
+mkdir -p ${WF_DIR}
+
+# Make sure FS_LICENSE is defined in the container.
+export SINGULARITYENV_FS_LICENSE=$HOME/fs_license/license.txt
+
+# Designate a templateflow bind-mount point
+export SINGULARITYENV_TEMPLATEFLOW_HOME="/templateflow"
+SINGULARITY_CMD="singularity run --cleanenv \
+-B ${BIDS_DIR}:/data \
+-B ${DERIVS_DIR}:/derivatives \
+-B ${TEMPLATEFLOW_HOST_HOME}:${SINGULARITYENV_TEMPLATEFLOW_HOME} \
+-B ${WF_DIR}:/tmp \
+${containers_home}/${mriqc_container}"
+
+opts="-w /tmp/tmp_workflow \
+-vvv \
+--ants-nthreads 6 \
+--n_procs=16 \
+--float32 \
+-m bold \
+--task-id rest \
+--no-sub"
+
+# Parse the participants.tsv file and extract one subject ID from the line corresponding to this SLURM task.
+subject=$( sed -n -E "$((${SLURM_ARRAY_TASK_ID}))s/sub-(\S*)\>.*/\1/gp" ${BIDS_DIR}/participants.tsv )
+echo $subject
+
+# Compose the command line
+cmd="${SINGULARITY_CMD} ${BIDS_DIR} ${DERIVS_DIR} participant --participant-label ${subject} ${opts}"
+
+
+# Setup done, run the command
+unset PYTHONPATH
+echo Running task ${SLURM_ARRAY_TASK_ID}
+echo Commandline: $cmd
+eval $cmd
+exitcode=$?
+
+# Output results to a table
+echo "sub-$subject   ${SLURM_ARRAY_TASK_ID}    $exitcode" \
+      >> logs/${SLURM_JOB_NAME}.${SLURM_ARRAY_JOB_ID}.tsv
+echo Finished tasks ${SLURM_ARRAY_TASK_ID} with exit code $exitcode
+exit $exitcode
+
